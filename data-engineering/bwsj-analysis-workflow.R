@@ -1,13 +1,13 @@
 
+
 library(tidyverse)
-library(ggmap)
 library(sf)
 library(tidygeocoder)
 library(tidycensus)
 library(scales)
 library(readxl)
 library(viridis)
-
+library(ggplot2)
 
 # Setup steps -------------------------------------------------------------
 
@@ -17,15 +17,33 @@ readRenviron("~/.Renviron")
 
 # Download data from Box here: https://uchicago.box.com/s/ut4wyfluhtdm3j8b1fd6ek3l05jtf890
 # Put it in a local folder and enter path here:
-file_path = '/Users/nm/Desktop/BWSJ/'
+file_path = '/Users/nm/Desktop/projects/work/mansueto/bwsj/bwsj-estab/'
 
 # Read in data from the downloaded BWSJ folder
-mwdbe <- read_csv(paste0(file_path,'mwdbe.csv'))
-if (file.exists(paste0(file_path,'mwdbe_clean.geojson'))) { mwdbe_clean <- st_read(paste0(file_path,'mwdbe_clean.geojson')) }
-mapcorps <- read_csv(paste0(file_path,'Map Corps Chicago 2009-2020/Chicago_Data_2019.csv'))
-chi_buildings <- st_read(paste0(file_path,'chicago_footprints.geojson'))
-infogroup <- read_csv(paste0(file_path,'chicago_establishments.csv'))
-afam_biz_licenses <- read_csv(paste0(file_path,'afam_biz_licenses.csv'))
+mwdbe <- read_csv(paste0(file_path,'BWSJ/mwdbe.csv'))
+if (file.exists(paste0(file_path,'BWSJ/mwdbe_geocoded.csv'))) { mwdbe_clean <- st_read(paste0(file_path,'BWSJ/mwdbe_geocoded.csv')) }
+mapcorps <- read_csv(paste0(file_path,'BWSJ/Map Corps Chicago 2009-2020/Chicago_Data_2019.csv'))
+chi_buildings <- st_read(paste0(file_path,'BWSJ/chicago_footprints.geojson'))
+infogroup <- read_csv(paste0(file_path,'BWSJ/chicago_establishments.csv'))
+afam_biz_licenses <- read_csv(paste0(file_path,'BWSJ/afam_biz_licenses.csv'))
+
+# NAICS -------------------------------------------------------------------
+
+# Download and read in Census NAICS Codes
+naics_url <- 'https://www.census.gov/naics/2017NAICS/2-6%20digit_2017_Codes.xlsx'
+tmp_filepath <- paste0(tempdir(), '/', basename(naics_url))
+download.file(url = paste0(naics_url), destfile = tmp_filepath)
+naics <- read_excel(tmp_filepath)
+
+# Clean up columns
+naics_clean <- naics %>%
+  select_all(~gsub("\\s+|\\.|\\/", "_", .)) %>%
+  rename_all(list(tolower)) %>%
+  select(`2017_naics_us_code`, `2017_naics_us_title`) %>%
+  drop_na() %>%
+  rename(naics_code = `2017_naics_us_code`,
+         naics_title = `2017_naics_us_title`) 
+rm(naics)
 
 # MWDBE Data --------------------------------------------------------------
 # Source: https://chicago.mwdbe.com/ 
@@ -47,59 +65,50 @@ mwdbe <- mwdbe %>% filter(ethnicity %in% c("African-American (Black)", "African 
 
 # Geocode addresses to lat - lons using a free API service from Census and OSM
 # WARNING TAKES 10 minutes - if-else logic to skips this step if you have the file already downloaded from box
-if (file.exists(paste0(file_path,'mwdbe_clean.geojson'))) {
-  mwdbe_clean <- st_read(paste0(file_path,'mwdbe_clean.csv'))
-} else {
+if (file.exists(paste0(file_path,'BWSJ/mwdbe_geocoded.csv'))) {
+  mwdbe <- st_read(paste0(file_path,'BWSJ/mwdbe_geocoded.csv'))
+} else { 
   mwdbe <- mwdbe %>% 
     geocode(street = physical_address, city = city, state = state, postalcode = zip,
             method = "cascade", cascade_order = c("census","osm"))
-  
-  # Select columns with potentially useful data
-  mwdbe_clean <- mwdbe %>% 
-    select(company_name, 
-           owner_first, owner_last, 
-           physical_address, city, state, zip, phone, email, industry_code, 
-           lat, long) 
-  
-  mwdbe_clean <- mwdbe_clean %>% mutate(source = 'mwdbe') %>%
-    # Standardize / rename column names 
-    rename(name = company_name, 
-           street_address = physical_address,
-           naics6 = industry_code,
-           latitude = lat,
-           longitude = long) %>% 
-    # Drop NAs
-    drop_na(latitude, longitude) %>% 
-    # Convert to lat lons to geometry format
-    st_as_sf(coords = c("longitude", "latitude"), 
-             crs = 4326, agr = "constant")
-  
-  # Download and read in Census NAICS Codes
-  naics_url <- 'https://www.census.gov/naics/2017NAICS/2-6%20digit_2017_Codes.xlsx'
-  tmp_filepath <- paste0(tempdir(), '/', basename(naics_url))
-  download.file(url = paste0(naics_url), destfile = tmp_filepath)
-  naics <- read_excel(tmp_filepath)
-  
-  # Clean up columns
-  naics_clean <- naics %>%
-    select_all(~gsub("\\s+|\\.|\\/", "_", .)) %>%
-    rename_all(list(tolower)) %>%
-    select(seq__no_, `2017_naics_us_code`, `2017_naics_us_title`) %>%
-    drop_na() %>%
-    rename(naics_code = `2017_naics_us_code`,
-           naics_title = `2017_naics_us_title`)
-  
-  # Add in NAICS Code Label
-  mwdbe_clean <- mwdbe_clean %>%
-    mutate(naics4 = str_sub(gsub('-','',naics6),1,4)) %>% 
-    left_join(., naics_clean, by = c('naics4'='naics_code'))
 }
 
-# Create unique ID
+# Select columns with potentially useful data
+mwdbe_clean <- mwdbe %>% 
+  select(company_name, 
+         owner_first, owner_last, 
+         physical_address, city, state, zip, phone, email, industry_code, 
+         lat, long) 
+
+mwdbe_clean <- mwdbe_clean %>% mutate(source = 'mwdbe') %>%
+  # Standardize / rename column names 
+  rename(name = company_name, 
+         street_address = physical_address,
+         naics6 = industry_code,
+         latitude = lat,
+         longitude = long) %>% 
+  # Drop NAs
+  drop_na(latitude, longitude) %>%
+  filter(latitude != 'NA') %>% 
+  mutate(zip = as.numeric(zip)) %>%
+  # Convert to lat lons to geometry format
+  st_as_sf(coords = c("longitude", "latitude"), 
+           crs = 4326, agr = "constant")
+
+# Add in NAICS Code Label
 mwdbe_clean <- mwdbe_clean %>%
+  mutate(naics4 = str_sub(gsub('-','',naics6),1,4)) %>% 
+  left_join(., naics_clean %>% rename(naics4_title = naics_title), by = c('naics4'='naics_code')) %>%
+  left_join(., naics_clean %>% rename(naics6_title = naics_title), by = c('naics6'='naics_code')) 
+  
+mwdbe_clean <- mwdbe_clean %>%
+  # Deduplicate identical rows
+  distinct(name, street_address, .keep_all = TRUE) %>%
   arrange(phone, email, name, street_address) %>%
+  # Create unique ID
   mutate(mwdbe_id = row_number(),
          universe_id = paste0(source,"_",mwdbe_id)) 
+rm(mwdbe)
 
 # MapCorps ----------------------------------------------------------------
 
@@ -117,7 +126,6 @@ mapcorps_clean <- mapcorps %>%
   # Create unique ID
   mutate(mapcorps_id = row_number()) 
 
-
 mapcorps_clean <- mapcorps_clean %>% 
   mutate(source = 'mapcorps',
          universe_id = paste0(source,"_",mapcorps_id)) %>% 
@@ -129,7 +137,7 @@ mapcorps_clean <- mapcorps_clean %>%
   # Convert to lat lons to geometry format
   st_as_sf(coords = c("longitude", "latitude"), 
            crs = 4326, agr = "constant")
-
+rm(mapcorps)
 
 # InfoGroup ---------------------------------------------------------------
 
@@ -140,13 +148,16 @@ infogroup_clean <- infogroup %>%
          primary_naics_code, #yellow_page_code, archive_version_year, 
          employee_size_5_location, sales_volume_9_location, year_established, # business_status_code, 
          subsidiary_number, parent_number,
-         latitude, longitude) %>%
-  # Select first 6 numbers in NAICS code
-  mutate(naics6 = str_sub(primary_naics_code,1,6)) 
+         latitude, longitude) 
 
 infogroup_clean <- infogroup_clean %>% 
   mutate(source = 'infogroup',
          universe_id = paste0(source,"_",abi)) %>%
+  # Add in NAICS label
+  mutate(naics4 = str_sub(primary_naics_code,1,4)) %>%
+  mutate(naics6 = str_sub(primary_naics_code,1,6)) %>%
+  left_join(., naics_clean %>% rename(naics4_title = naics_title), by = c('naics4'='naics_code')) %>%
+  left_join(., naics_clean %>% rename(naics6_title = naics_title), by = c('naics6'='naics_code')) %>%
   # Standardize / rename column names 
   rename(name = company, 
          street_address = address_line_1,
@@ -156,11 +167,9 @@ infogroup_clean <- infogroup_clean %>%
   # Convert to lat lons to geometry format
   st_as_sf(coords = c("longitude", "latitude"), 
            crs = 4326, agr = "constant")
+rm(infogroup)
 
 # Business Licenses -------------------------------------------------------
-
-# Download African American Business License Account Numbers
-# Nico matched business owners names in the Chicago Data Portal to a voterfile within Cook County. There were 7,766 good matches.
 
 # Download Business License data from Chicago Data Portal 
 biz_licenses <- read_csv('https://data.cityofchicago.org/api/views/uupf-x98q/rows.csv?accessType=DOWNLOAD')
@@ -170,8 +179,8 @@ biz_licenses <- biz_licenses %>%
   filter(city == 'CHICAGO')
 
 # Check if file is in folder
-if (file.exists(paste0(file_path,'biz_licenses_geocode.csv'))) {
-  biz_licenses_geocode <- read_csv(paste0(file_path,'biz_licenses_geocode.csv'))
+if (file.exists(paste0(file_path,'BWSJ/biz_licenses_geocode.csv'))) {
+  biz_licenses_geocode <- read_csv(paste0(file_path,'BWSJ/biz_licenses_geocode.csv'))
 } else {
   # If not in folder geocode missing lat lons
   biz_licenses_geocode <- biz_licenses %>% 
@@ -195,20 +204,22 @@ biz_licenses <- biz_licenses %>%
            crs = 4326, agr = "constant")
 
 biz_licenses_clean <- biz_licenses %>% 
-  # Inner join and limit to universe of AfAm owned businesses and standardize 
+  # Inner join and limit to universe of AfAm owned businesses 
+  # Matched business owners names in the Chicago Data Portal to a voterfile within Cook County. There were 7,766 good matches.
   inner_join(., afam_biz_licenses, by=c('account_number'='account_number')) %>%
-  select(id, license_id, account_number, site_number, legal_name, doing_business_as_name, 
-         address, city, state, zip_code, 
-         license_code, license_description, business_activity_id, business_activity, match_label, geometry) %>%
   # Rename column names 
   rename(street_address = address,
-         zip = zip_code,
-         name = doing_business_as_name) %>%
+         zip = zip_code) %>%
   # Change from character to numeric
-  mutate(zip = as.numeric(zip)) %>%
-  mutate(source = 'licenses',
-         universe_id = paste0(source,"_",license_id)) 
-  
+  mutate(zip = as.numeric(zip),
+         source = 'licenses',
+         universe_id = paste0(source,"_",license_id),
+         name = coalesce(legal_name,doing_business_as_name)) %>%
+  select(universe_id, id, license_id, account_number, site_number, name, legal_name, doing_business_as_name, 
+         street_address, city, state, zip, source, 
+         license_code, license_description, business_activity_id, business_activity, match_label, geometry) 
+rm(biz_licenses)
+
 # Combine all business files ----------------------------------------------
 
 # Check for duplicates
@@ -233,15 +244,27 @@ mapcorps_clean  %>%
   filter(dupes >= 2)
 
 # Combine files into master file: 
-
-full_universe <- bind_rows(mwdbe_clean,biz_licenses_clean,infogroup_clean,mapcorps_clean) 
+full_universe <- bind_rows(mwdbe_clean,biz_licenses_clean,infogroup_clean,mapcorps_clean) %>%
+  mutate(black_owned = case_when(source == "licenses" ~ 'likely',
+                                 source == "mwdbe" ~ 'confirmed',
+                                 source == "mapcorps" ~ 'confirmed',
+                                 source == "infogroup" ~ 'unverified',
+                                 TRUE ~ as.character('unverified')),
+         biz_activity_classification = case_when(source == "licenses" ~ 'License Code',
+                                           source == "infogroup" ~ 'NAICS',
+                                           source == "mwdbe" ~ "NAICS",
+                                           source == "mapcorps" ~ 'PlaceSubType',
+                                           TRUE ~ as.character('Other')),
+         biz_activity_code = coalesce(as.character(naics6),as.character(license_code)),
+         biz_activity_label = coalesce(naics6_title,license_description,placesubtype),
+         phone = coalesce(phone,phonenumber))
 
 full_universe  %>% 
   group_by(universe_id) %>% 
   mutate(dupes = n()) %>%
   filter(dupes >= 2)
 
-full_universe_match_job <- full_universe %>%
+full_universe <- full_universe %>%
   select(universe_id,
          name,
          street_address,
@@ -249,17 +272,26 @@ full_universe_match_job <- full_universe %>%
          state,
          zip,
          source,
+         biz_activity_classification,
+         biz_activity_code,
+         biz_activity_label,
+         black_owned,
+         match_label,
+         doing_business_as_name,
+         owner_first,
+         owner_last,
+         phone,
+         email,
          geometry) %>% 
   mutate(lon = map_dbl(geometry, ~st_point_on_surface(.x)[[1]]),
-         lat = map_dbl(geometry, ~st_point_on_surface(.x)[[2]])) %>%
-  st_drop_geometry()
+         lat = map_dbl(geometry, ~st_point_on_surface(.x)[[2]])) 
 
-write_csv(full_universe_match_job, paste0(file_path,'match_job.csv'))
+write_csv(full_universe_match_job %>% st_drop_geometry(), paste0(file_path,'match_job.csv'))
+st_write(full_universe_match_job, paste0(file_path,'match_job.geojson'))
 
 # Submit Match Job Here: https://shop.safegraph.com/match/
 
 # Read in output from the match job
-
 
 # Community Areas ---------------------------------------------------------
 
@@ -350,6 +382,16 @@ chicago_acs_community_areas <- left_join(community_areas, chicago_acs_community_
   st_transform(crs = st_crs(4326)) %>% 
   st_as_sf()
 
+# Limit Full Universe to AfAm community areas
+community_list <- chicago_acs_community_areas %>% filter(black_population_share >= .5) %>% pull(community)
+afam_universe <- full_universe %>% filter(community %in% community_list)
+
+write_csv(afam_universe %>% st_drop_geometry(), paste0(file_path,'afam_sites.csv'))
+st_write(afam_universe, paste0(file_path,'afam_sites.geojson'),delete_dsn = TRUE )
+
+afam_universe %>% st_drop_geometry() %>% group_by(source ) %>% tally()
+
+
 # Visually inspect
 ggplot(chicago_acs_community_areas, aes(fill = black_population_share, color = black_population_share)) +
   geom_sf() + scale_fill_viridis() + scale_color_viridis() 
@@ -359,3 +401,30 @@ ggplot(chicago_acs_community_areas, aes(fill = median_household_income, color = 
 
 ggplot(chicago_acs_community_areas, aes(fill = log(black_median_household_income), color = log(black_median_household_income) )) +
   geom_sf() + scale_fill_viridis() + scale_color_viridis() 
+
+# Majority Black Community Areas
+ggplot(chicago_acs_community_areas %>% filter(black_population_share >= .5), aes(fill = black_population_share, color = black_population_share)) +
+  geom_sf() + scale_fill_viridis() + scale_color_viridis() 
+
+
+# Appendix ----------------------------------------------------------------
+
+
+chi_bbox <- st_bbox(community_areas) 
+chi_bbox_crop <- st_bbox(c(xmin = -87.862226, 
+                           xmax = chi_bbox[[3]], 
+                           ymax = chi_bbox[[4]], 
+                           ymin = chi_bbox[[2]]), crs = st_crs(4326))
+community_areas_mod <- st_crop(community_areas, y = chi_bbox_crop) 
+  
+
+(p <- ggplot( ) +
+  geom_sf(data =st_buffer(st_union(community_areas_mod), joinStyle = "ROUND", dist = .001, endCapStyle="ROUND"), fill = 'white', color = alpha('#333333', 1), size =.5) +
+  geom_sf(data = community_areas_mod %>% filter(community %in% community_list), color = '#333333', fill='#333333', size = 1) + #alpha = .06, 
+  geom_sf(data = afam_universe %>% filter(source != 'infogroup'), size =.00000000001, 
+          color = alpha('white', .5), fill = alpha('#333333', .1)) + 
+  ggmap::theme_nothing())
+
+ggsave(plot = p, filename = '/Users/nm/Desktop/b_map.png', device = 'png', 
+       width = 6, height = 9, dpi = 500)
+
