@@ -405,26 +405,3 @@ ggplot(chicago_acs_community_areas, aes(fill = log(black_median_household_income
 # Majority Black Community Areas
 ggplot(chicago_acs_community_areas %>% filter(black_population_share >= .5), aes(fill = black_population_share, color = black_population_share)) +
   geom_sf() + scale_fill_viridis() + scale_color_viridis() 
-
-
-# Appendix ----------------------------------------------------------------
-
-
-chi_bbox <- st_bbox(community_areas) 
-chi_bbox_crop <- st_bbox(c(xmin = -87.862226, 
-                           xmax = chi_bbox[[3]], 
-                           ymax = chi_bbox[[4]], 
-                           ymin = chi_bbox[[2]]), crs = st_crs(4326))
-community_areas_mod <- st_crop(community_areas, y = chi_bbox_crop) 
-  
-
-(p <- ggplot( ) +
-  geom_sf(data =st_buffer(st_union(community_areas_mod), joinStyle = "ROUND", dist = .001, endCapStyle="ROUND"), fill = 'white', color = alpha('#333333', 1), size =.5) +
-  geom_sf(data = community_areas_mod %>% filter(community %in% community_list), color = '#333333', fill='#333333', size = 1) + #alpha = .06, 
-  geom_sf(data = afam_universe %>% filter(source != 'infogroup'), size =.00000000001, 
-          color = alpha('white', .5), fill = alpha('#333333', .1)) + 
-  ggmap::theme_nothing())
-
-ggsave(plot = p, filename = '/Users/nm/Desktop/b_map.png', device = 'png', 
-       width = 6, height = 9, dpi = 500)
-
